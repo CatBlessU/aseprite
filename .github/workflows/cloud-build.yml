@@ -1,0 +1,86 @@
+name: Cloud Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            os: windows-latest
+          - label: Linux x64
+            os: ubuntu-latest
+          - label: macOS
+            os: macos-latest
+
+    steps:
+      - name: Check out source and submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libpixman-1-dev libfreetype6-dev libharfbuzz-dev zlib1g-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev \
+            libfontconfig1-dev
+
+      - name: Install Ninja
+        uses: aseprite/get-ninja@27788a2a3a1d6106713702d6741e4ee95f3cc10a
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c # v4.0.0
+        with:
+          arch: x64
+
+      - name: Build release
+        shell: bash
+        run: bash build.sh --auto --norun
+
+      - name: Verify and package
+        id: package
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            test -f build/bin/aseprite.exe
+          else
+            test -x build/bin/aseprite
+          fi
+
+          short_sha="${GITHUB_SHA:0:7}"
+          os_name=$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
+          arch_name=$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')
+          package="aseprite-${os_name}-${arch_name}-${short_sha}.tar.gz"
+          tar -C build/bin -czf "$package" .
+          echo "file=$package" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ steps.package.outputs.file }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
